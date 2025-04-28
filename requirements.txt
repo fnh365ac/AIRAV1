@@ -1,9 +1,9 @@
-langchain-core
+streamlit
+langchain
 langchain-community
 langchain-openai
 openai
-faiss-cpu
-pypdf
-tiktoken
 python-dotenv
-streamlit
+pypdf
+fpdf
+faiss-cpu

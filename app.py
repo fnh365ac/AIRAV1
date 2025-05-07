@@ -17,30 +17,25 @@ from fpdf import FPDF
 with open("config.json", "r", encoding="utf-8") as f:
     config = json.load(f)
 
-# 2. Setze Streamlit Page Config
 st.set_page_config(
     page_title=config["app_name"],
     page_icon=config["logo_path"],
     layout="wide"
 )
 
-# 3. Health Check für Azure OpenAI
 try:
     health_check()
     st.sidebar.success("✅ Azure OpenAI-Verbindung erfolgreich!")
-except Exception as e:
-    st.sidebar.error(f"❌ Azure OpenAI Verbindung fehlgeschlagen: {e}")
+except Exception:
+    st.sidebar.error("❌ Azure OpenAI Verbindung fehlgeschlagen")
     st.stop()
 
-# 4. Erzeuge Embedding- und Chat-Clients
 embedding_client = create_embedding_client()
 llm_client = create_chat_client()
 
-# Sprache laden oder Standard setzen
 if "language" not in st.session_state:
     st.session_state.language = config.get("default_language", "de")
 
-# Sidebar
 st.sidebar.image(config["logo_path"], use_container_width=True)
 st.sidebar.title(config["app_name"])
 
@@ -48,127 +43,139 @@ language = st.sidebar.selectbox(
     "Sprache / Language", options=["de", "en"], index=0 if st.session_state.language == "de" else 1
 )
 st.session_state.language = language
-
-# Textfunktion aus aktuellem Sprachzustand
 current_texts = texts[language]
 
-# Hauptinhalt
 st.title(current_texts["welcome_title"])
 st.write(current_texts["welcome_message"])
 
+available_docs = {
+    "DSGVO": "data/dsgvo.pdf",
+    "GDPR": "data/gdpr.pdf",
+    "NIS2": "data/nis2.pdf",
+    "NIS2 (en)": "data/nis2_en.pdf",
+    "Data Act": "data/data_act.pdf",
+    "Data Act (en)": "data/data_act_en.pdf"
+}
+
+
+col1, col2 = st.columns(2)
+with col1:
+    doc1_name = st.selectbox("Vergleiche oder nutze folgende Regularik:", list(available_docs.keys()), index=0)
+with col2:
+    doc2_name = st.selectbox("mit Gesetz/Regularik (oder leer lassen für einzelnes Gesetz/Regularik):", ["---"] + list(available_docs.keys()), index=0)
+
+user_role = st.radio("Für wen soll die Antwort formuliert werden?", ["Jurist", "Anwender", "Techniker/Entwickler"], horizontal=True)
+
 query = st.text_input(current_texts["query_input"])
+rebuild = st.sidebar.button("🔄 Embeddings neu erstellen")
+status = st.sidebar.empty()
 
-# Button zum Neu-Erstellen der Embeddings
-rebuild_embeddings = st.sidebar.button("🔄 Embeddings neu erstellen")
-
-# Statusanzeige in Sidebar
-status_text = st.sidebar.empty()
-
-# Hilfsfunktionen Export
+# PDF Export
 def generate_pdf(query, vergleich, filename="vergleich.pdf"):
     pdf = FPDF()
     pdf.add_page()
-    
-    # Logo einfügen
-    logo_path = "data/Health365AC_Logo_Freigestellt.png"  # Pfad zu deinem Logo (ggf. anpassen)
+    logo_path = "data/health365_logo.png"
     if os.path.exists(logo_path):
         pdf.image(logo_path, x=10, y=8, w=60)
-    
-    pdf.set_font("Arial", 'B', 16)
-    pdf.ln(40)  # Abstand unter dem Logo
-    pdf.cell(0, 10, "Vergleichsanalyse DSGVO vs. NIS2", ln=True, align='C')
+    font_path = "fonts/DejaVuSans.ttf"
+    if os.path.exists(font_path):
+        try:
+            pdf.add_font("DejaVu", "", font_path, uni=True)
+            pdf.add_font("DejaVu", "B", font_path, uni=True)
+            font_family = "DejaVu"
+        except RuntimeError:
+            font_family = "Arial"
+    else:
+        font_family = "Arial"
 
+    try:
+        pdf.set_font(font_family, '', 14)
+    except RuntimeError:
+        pdf.set_font("Arial", '', 14)
+
+    pdf.ln(30)
+    pdf.set_font(font_family, 'B', 16)
+    title = "Comparison Analysis" if language == "en" else "Vergleichsanalyse"
+    pdf.cell(0, 10, title, ln=True, align='C')
     pdf.ln(10)
-    pdf.set_font("Arial", 'B', 12)
-    pdf.cell(0, 10, "Fragestellung:", ln=True)
-    
-    pdf.set_font("Arial", '', 12)
+
+    pdf.set_font(font_family, 'B', 12)
+    pdf.cell(0, 10, "Question:" if language == "en" else "Fragestellung:", ln=True)
+    pdf.set_font(font_family, '', 12)
     pdf.multi_cell(0, 10, query)
 
     pdf.ln(10)
-    pdf.set_font("Arial", 'B', 12)
-    pdf.cell(0, 10, "Vergleichsergebnis:", ln=True)
-
-    pdf.set_font("Arial", '', 12)
+    pdf.set_font(font_family, 'B', 12)
+    pdf.cell(0, 10, "Result:" if language == "en" else "Ergebnis:", ln=True)
+    pdf.set_font(font_family, '', 12)
     for line in vergleich.split("\n"):
         pdf.multi_cell(0, 10, line)
 
-    return pdf.output(dest='S').encode('latin-1')
+    return pdf.output(dest='S').encode('latin-1', errors='ignore')
 
-def generate_markdown(text):
-    return text.encode('utf-8')
 
 # Verarbeitung
-if query or rebuild_embeddings:
-    with st.spinner(current_texts["processing"]):
-        dsgvo_chunks = load_and_chunk("data/dsgvo.pdf")
-        nis2_chunks = load_and_chunk("data/nis2.pdf")
+if query:
+    try:
+        with st.spinner(current_texts["processing"]):
+            chunks1 = load_and_chunk(available_docs[doc1_name])
+            db1 = build_or_load_vectorstore(chunks1, doc1_name, embedding_client)
 
-        if rebuild_embeddings:
-            # Speicher löschen
-            if os.path.exists("vector_store/faiss_dsgvo"):
-                shutil.rmtree("vector_store/faiss_dsgvo")
-            if os.path.exists("vector_store/faiss_nis2"):
-                shutil.rmtree("vector_store/faiss_nis2")
-            st.success("✅ Embeddings wurden neu erstellt!")
-            status_text.success("🔄 Embeddings neu erstellt!")
+            if rebuild:
+                shutil.rmtree(f"vector_store/faiss_{doc1_name.lower()}", ignore_errors=True)
+                status.info("🔄 Embeddings werden neu erstellt ...")
 
-        try:
-            db_dsgvo = build_or_load_vectorstore(dsgvo_chunks, "vector_store/faiss_dsgvo", embedding_client)
-            db_nis2 = build_or_load_vectorstore(nis2_chunks, "vector_store/faiss_nis2", embedding_client)
-            status_text.success("✅ FAISS erfolgreich geladen!")
-        except Exception as e:
-            status_text.error(f"❌ Fehler beim Laden der Vektordatenbank: {e}")
-            st.stop()
+            # Rolle abhängig von Sprache
+            role_instruction = {
+                "Jurist": {
+                    "de": "Fasse die Inhalte rechtlich strukturiert zusammen. Gib konkrete Fundstellen (Artikel, Absatz, Recital) aber immer den Atikel an und verwende juristische Sprache.",
+                    "en": "Summarize the content in a legally structured format. Provide exact references (Article, Paragraph, Recital) and use legal terminology."
+                },
+                "Anwender": {
+                    "de": "Erkläre die Inhalte möglichst einfach, nutzerfreundlich und anwendungsbezogen so das ich diese in eine Richtlinie oder Dokument übersetzen kann.",
+                    "en": "Explain the content as simply, user-friendly, and application-oriented as possible so that I can translate it into a guideline or document."
+                },
+                "Techniker": {
+                    "de": "Fasse die Inhalte so zusammen, dass ein technischer Verantwortlicher sie als umsetzbare Maßnahmen interpretieren kann. Berücksichtige mögliche Standards, Verfahren, Protokolle und Tools (z. B. ISO-Normen, BSI, OWASP, Logging, Monitoring, Schnittstellen etc.).",
+                    "en": "Summarize the content so that a technical stakeholder can interpret it as actionable steps. Consider relevant standards, procedures, protocols and tools (e.g. ISO, BSI, OWASP, logging, monitoring, APIs)."
+                }
+            }[user_role][language]
 
-        if query:
-            top_chunks_dsgvo = db_dsgvo.similarity_search(query, k=3)
-            top_chunks_nis2 = db_nis2.similarity_search(query, k=3)
-
-            st.markdown(f"## {current_texts['preview_dsgvo']}")
-            for i, chunk in enumerate(top_chunks_dsgvo, 1):
-                page_number = chunk.metadata.get('page', None)
-                if isinstance(page_number, int):
-                    page_display = page_number + 1
+            if doc2_name != "---":
+                chunks2 = load_and_chunk(available_docs[doc2_name])
+                db2 = build_or_load_vectorstore(chunks2, doc2_name, embedding_client)
+                vergleich = compare(query, db1, db2, llm_client, doc1_name, doc2_name)
+            else:
+                top_chunks = db1.similarity_search(query, k=3)
+                context = "\n\n".join([chunk.page_content for chunk in top_chunks])
+                if language == "en":
+                    prompt_intro = f"You are an AI assistant. Use the following legal excerpt from {doc1_name} to answer the question. {role_instruction}"
+                    prompt_text = f"{prompt_intro}\n\nExcerpt:\n{context}\n\nQuestion: {query}"
                 else:
-                    page_display = "N/A"
-                with st.expander(f"DSGVO Chunk #{i} (Seite {page_display})"):
+                    prompt_intro = f"Du bist ein KI-Assistent. Nutze folgenden Gesetzestext aus {doc1_name}, um die Frage zu beantworten. {role_instruction}"
+                    prompt_text = f"{prompt_intro}\n\nTextauszug:\n{context}\n\nFrage: {query}"
+                vergleich = llm_client.invoke(prompt_text).content
+
+            st.markdown(f"## {doc1_name} – relevante Textstellen")
+            for i, chunk in enumerate(db1.similarity_search(query, k=3), 1):
+                title = chunk.metadata.get("title_guess", chunk.page_content[:60])
+                page = chunk.metadata.get("page", "N/A")
+                with st.expander(f"{doc1_name} Chunk #{i} (Seite {page}) – {title}"):
                     st.write(chunk.page_content)
 
-            st.markdown(f"## {current_texts['preview_nis2']}")
-            for i, chunk in enumerate(top_chunks_nis2, 1):
-                page_number = chunk.metadata.get('page', None)
-                if isinstance(page_number, int):
-                    page_display = page_number + 1
-                else:
-                    page_display = "N/A"
-                with st.expander(f"NIS2 Chunk #{i} (Seite {page_display})"):
-                    st.write(chunk.page_content)
+            if doc2_name != "---":
+                st.markdown(f"## {doc2_name} – relevante Textstellen")
+                for i, chunk in enumerate(db2.similarity_search(query, k=3), 1):
+                    title = chunk.metadata.get("title_guess", chunk.page_content[:60])
+                    page = chunk.metadata.get("page", "N/A")
+                    with st.expander(f"{doc2_name} Chunk #{i} (Seite {page}) – {title}"):
+                        st.write(chunk.page_content)
 
-            vergleich = compare(query, db_dsgvo, db_nis2, llm_client)
-
-            st.markdown(f"## {current_texts['comparison_result']}")
+            st.markdown("## Ergebnis")
             st.write(vergleich)
 
-            st.markdown("---")
-            st.subheader("🔽 Exportieren:")
+            st.download_button("📄 Ergebnis als PDF", generate_pdf(query, vergleich), file_name="vergleich.pdf", mime="application/pdf")
+            st.download_button("📝 Ergebnis als Markdown", vergleich.encode('utf-8'), file_name="vergleich.md", mime="text/markdown")
 
-            col1, col2 = st.columns(2)
-
-            with col1:
-                pdf_file = pdf_file = generate_pdf(query, vergleich)
-                st.download_button(
-                    label=current_texts["export_button"] + " (PDF)",
-                    data=pdf_file,
-                    file_name="vergleich.pdf",
-                    mime="application/pdf"
-                )
-
-            with col2:
-                md_file = generate_markdown(vergleich)
-                st.download_button(
-                    label=current_texts["export_button"] + " (Markdown)",
-                    data=md_file,
-                    file_name="vergleich.md",
-                    mime="text/markdown"
-                )
+    except Exception:
+        st.error("❌ Es ist ein Fehler aufgetreten.")

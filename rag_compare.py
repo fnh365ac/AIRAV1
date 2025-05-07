@@ -7,10 +7,8 @@ from langchain_community.vectorstores import FAISS
 from langchain.prompts import PromptTemplate
 from openai import AzureOpenAI
 
-# Lade Umgebungsvariablen
 load_dotenv()
 
-# Wrapper-Klasse für Embeddings
 class AzureEmbeddingWrapper:
     def __init__(self, client):
         self.client = client
@@ -28,7 +26,6 @@ class AzureEmbeddingWrapper:
     def __call__(self, text):
         return self.embed_query(text)
 
-# Azure Health Check Funktion
 def health_check():
     client = AzureChatOpenAI(
         deployment_name=os.getenv("OPENAI_DEPLOYMENT_CHAT_NAME"),
@@ -40,7 +37,6 @@ def health_check():
     )
     _ = client.invoke("PING")
 
-# OpenAI Azure Embedding-Client erstellen
 def create_embedding_client():
     return AzureOpenAI(
         api_key=os.getenv("OPENAI_API_KEY"),
@@ -48,7 +44,6 @@ def create_embedding_client():
         api_version=os.getenv("OPENAI_API_VERSION"),
     )
 
-# Azure Chat-Client erstellen
 def create_chat_client():
     return AzureChatOpenAI(
         deployment_name=os.getenv("OPENAI_DEPLOYMENT_CHAT_NAME"),
@@ -59,40 +54,42 @@ def create_chat_client():
         temperature=0.2,
     )
 
-# Lade und chunke ein PDF-Dokument
 def load_and_chunk(pdf_path):
     loader = PyPDFLoader(pdf_path)
     docs = loader.load()
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
-    return splitter.split_documents(docs)
+    chunks = splitter.split_documents(docs)
 
-# Vektorstore laden oder neu erstellen
-def build_or_load_vectorstore(chunks, path, embedding_client):
+    # Extra-Metadaten hinzufügen
+    for i, chunk in enumerate(chunks):
+        chunk.metadata["chunk_id"] = i
+        chunk.metadata["source_page"] = chunk.metadata.get("page", "N/A")
+        chunk.metadata["title_guess"] = chunk.page_content.split("\n")[0][:80]
+    return chunks
+
+def build_or_load_vectorstore(chunks, name, embedding_client):
+    path = os.path.join("vector_store", f"faiss_{name.lower()}")
     index_file = os.path.join(path, "index.faiss")
     embedding = AzureEmbeddingWrapper(embedding_client)
+
     if os.path.exists(index_file):
-        # Lade FAISS mit explizitem Trust
         return FAISS.load_local(path, embedding, allow_dangerous_deserialization=True)
     else:
-        vs = FAISS.from_texts(
-            [doc.page_content for doc in chunks],
-            embedding
-        )
+        vs = FAISS.from_documents(chunks, embedding)
         vs.save_local(path)
         return vs
 
-# Zwei Chunks vergleichen mit festen Textnamen DSGVO und NIS2
-def compare_chunks(chunk1, chunk2, llm):
-    prompt = PromptTemplate.from_template("""
+def compare_chunks(chunk1, chunk2, llm, name1="Text A", name2="Text B"):
+    prompt = PromptTemplate.from_template(f"""
 Vergleiche die folgenden zwei Gesetzestexte:
 
---- DSGVO:
-{a}
+--- {name1}:
+{{a}}
 
---- NIS2:
-{b}
+--- {name2}:
+{{b}}
 
-Erstelle eine juristisch präzise Analyse:
+Gib eine juristisch präzise Analyse:
 - Was ist ähnlich?
 - Wo unterscheiden sich die Texte?
 - Ergänzen sich bestimmte Punkte?
@@ -100,8 +97,7 @@ Erstelle eine juristisch präzise Analyse:
     antwort = llm.invoke(prompt.format(a=chunk1, b=chunk2))
     return antwort.content
 
-# Vergleich basierend auf Suchbegriff
-def compare(query_text, db1, db2, llm):
+def compare(query_text, db1, db2, llm, name1, name2):
     top_chunk_1 = db1.similarity_search(query_text, k=1)[0]
     top_chunk_2 = db2.similarity_search(query_text, k=1)[0]
-    return compare_chunks(top_chunk_1.page_content, top_chunk_2.page_content, llm)
+    return compare_chunks(top_chunk_1.page_content, top_chunk_2.page_content, llm, name1, name2)

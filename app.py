@@ -135,7 +135,7 @@ if query:
                     "de": "Erkläre die Inhalte möglichst einfach, nutzerfreundlich und anwendungsbezogen so das ich diese in eine Richtlinie oder Dokument übersetzen kann.",
                     "en": "Explain the content as simply, user-friendly, and application-oriented as possible so that I can translate it into a guideline or document."
                 },
-                "Techniker": {
+                "Techniker/Entwickler": {
                     "de": "Fasse die Inhalte so zusammen, dass ein technischer Verantwortlicher sie als umsetzbare Maßnahmen interpretieren kann. Berücksichtige mögliche Standards, Verfahren, Protokolle und Tools (z. B. ISO-Normen, BSI, OWASP, Logging, Monitoring, Schnittstellen etc.).",
                     "en": "Summarize the content so that a technical stakeholder can interpret it as actionable steps. Consider relevant standards, procedures, protocols and tools (e.g. ISO, BSI, OWASP, logging, monitoring, APIs)."
                 }
